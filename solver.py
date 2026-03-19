@@ -9,14 +9,14 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from .core.models import Individual, FitnessScore
-from .core.distance import DistanceMatrix
-from .core.fitness import FitnessEvaluator
-from .ga.operators import (
+from core.models import Individual, FitnessScore
+from core.distance import DistanceMatrix
+from core.fitness import FitnessEvaluator
+from ga.operators import (
     tournament_select, order_crossover, poi_aware_crossover, mutate
 )
-from .ga.repair import RepairEngine
-from .ga.seeding import GreedySeeder
+from ga.repair import RepairEngine
+from ga.seeding import GreedySeeder
 
 
 @dataclass
@@ -44,7 +44,7 @@ class NSGA2Solver:
     """
 
     def __init__(self, pois, dm: DistanceMatrix, config: SolverConfig, profile=None):
-        from .core.profile import TouristProfile, TransportMode, MobilityLevel
+        from core.profile import TouristProfile, TransportMode, MobilityLevel
         self.pois    = pois
         self.dm      = dm
         self.config  = config
