@@ -1,17 +1,14 @@
 """
 core/distance.py — Matrice delle distanze e tempi di percorrenza.
-Supporta Haversine (offline) e OSRM (online, opzionale).
+Supporta Haversine (offline) e profilo turista per la velocità.
 """
 from __future__ import annotations
 import math
-from functools import lru_cache
-from typing import Union
+from typing import Union, Optional, TYPE_CHECKING
 from .models import PoI
 
-
-# Velocità medie di spostamento a piedi / mezzi pubblici (km/h)
-WALK_SPEED_KMH = 4.5
-TRANSIT_SPEED_KMH = 20.0
+if TYPE_CHECKING:
+    from .profile import TouristProfile
 
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -26,30 +23,26 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 class DistanceMatrix:
     """
-    Precalcola tutte le distanze e i tempi di percorrenza tra i PoI.
-    Usare build() prima di avviare il GA per evitare calcoli ripetuti.
+    Precalcola tutte le distanze tra i PoI (km).
+    I TEMPI vengono calcolati on-the-fly tramite il TouristProfile,
+    così un cambio di modalità non richiede di ricostruire la matrice.
     """
 
-    def __init__(self, pois: list[PoI], mode: str = "walk"):
+    def __init__(self, pois: list[PoI], profile: Optional["TouristProfile"] = None):
         self.pois    = pois
-        self.mode    = mode
+        self.profile = profile
         self.idx     = {poi.id: i for i, poi in enumerate(pois)}
         n            = len(pois)
-        self._dist   = [[0.0] * n for _ in range(n)]  # km
-        self._time   = [[0]   * n for _ in range(n)]  # minuti
+        self._dist   = [[0.0] * n for _ in range(n)]  # km (invariante)
 
     def build(self):
-        """Popola la matrice con Haversine. Chiama una volta sola."""
-        speed = WALK_SPEED_KMH if self.mode == "walk" else TRANSIT_SPEED_KMH
+        """Popola la matrice delle distanze. Chiama una volta sola."""
         for i, a in enumerate(self.pois):
             for j, b in enumerate(self.pois):
                 if i == j:
                     continue
-                km = haversine_km(a.lat, a.lon, b.lat, b.lon)
-                # Fattore 1.3 per percorso reale vs linea d'aria
-                km *= 1.3
+                km = haversine_km(a.lat, a.lon, b.lat, b.lon) * 1.3
                 self._dist[i][j] = km
-                self._time[i][j] = int((km / speed) * 60)  # minuti
 
     def dist(self, a: Union[PoI, str], b: Union[PoI, str]) -> float:
         """Distanza in km tra due PoI."""
@@ -58,13 +51,17 @@ class DistanceMatrix:
         return self._dist[ia][ib]
 
     def time(self, a: Union[PoI, str], b: Union[PoI, str]) -> int:
-        """Tempo di percorrenza in minuti tra due PoI."""
-        ia = self.idx[a.id if isinstance(a, PoI) else a]
-        ib = self.idx[b.id if isinstance(b, PoI) else b]
-        return self._time[ia][ib]
+        """Tempo di percorrenza in minuti, rispettando la modalità del profilo."""
+        km = self.dist(a, b)
+        return self._km_to_min(km)
 
-    def time_from_start(self, start_lat: float, start_lon: float, poi: PoI) -> int:
-        """Tempo in minuti dalla posizione di partenza (hotel/stazione) a un PoI."""
-        speed = WALK_SPEED_KMH if self.mode == "walk" else TRANSIT_SPEED_KMH
-        km = haversine_km(start_lat, start_lon, poi.lat, poi.lon) * 1.3
-        return int((km / speed) * 60)
+    def time_from_coord(self, lat: float, lon: float, poi: PoI) -> int:
+        """Tempo in minuti da coordinate arbitrarie (es. hotel) a un PoI."""
+        km = haversine_km(lat, lon, poi.lat, poi.lon) * 1.3
+        return self._km_to_min(km)
+
+    def _km_to_min(self, km: float) -> int:
+        if self.profile is not None:
+            return self.profile.travel_time_min(km)
+        # Fallback sicuro: a piedi 4.5 km/h
+        return max(1, int((km / 4.5) * 60))

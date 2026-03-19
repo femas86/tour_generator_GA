@@ -9,11 +9,13 @@ import math
 
 
 class PoICategory(Enum):
-    MUSEUM    = "museum"
-    MONUMENT  = "monument"
-    RESTAURANT = "restaurant"
-    PARK      = "park"
-    VIEWPOINT = "viewpoint"
+    MUSEUM     = "museum"
+    MONUMENT   = "monument"
+    RESTAURANT = "restaurant"   # pranzo / cena formale
+    BAR        = "bar"          # caffè, aperitivo, sosta breve
+    GELATERIA  = "gelateria"    # sosta dolce pomeridiana
+    PARK       = "park"
+    VIEWPOINT  = "viewpoint"
 
 
 @dataclass
@@ -85,10 +87,11 @@ class ScheduledStop:
 
 @dataclass
 class TourSchedule:
-    stops:         list[ScheduledStop] = field(default_factory=list)
-    total_time:    int   = 0
+    stops:          list[ScheduledStop] = field(default_factory=list)
+    total_time:     int   = 0
     total_distance: float = 0.0
-    is_feasible:   bool  = False
+    total_wait:     int   = 0    # minuti di attesa cumulati (attese a TW)
+    is_feasible:    bool  = False
 
     def summary(self) -> str:
         lines = []
@@ -97,7 +100,11 @@ class TourSchedule:
             d = f"{s.departure//60:02d}:{s.departure%60:02d}"
             w = f" (attesa {s.wait} min)" if s.wait > 0 else ""
             lines.append(f"  {a}–{d}  {s.poi.name}{w}")
-        lines.append(f"  Totale: {self.total_time} min, {self.total_distance:.1f} km")
+        wait_note = f", attese {self.total_wait} min" if self.total_wait > 0 else ""
+        lines.append(
+            f"  Totale: {self.total_time} min, "
+            f"{self.total_distance:.1f} km{wait_note}"
+        )
         return "\n".join(lines)
 
 

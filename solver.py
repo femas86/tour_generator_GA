@@ -9,59 +9,63 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from core.models import Individual, FitnessScore
-from core.distance import DistanceMatrix
-from core.fitness import FitnessEvaluator
-from ga.operators import (
+from .core.models import Individual, FitnessScore
+from .core.distance import DistanceMatrix
+from .core.fitness import FitnessEvaluator
+from .ga.operators import (
     tournament_select, order_crossover, poi_aware_crossover, mutate
 )
-from ga.repair import RepairEngine
-from ga.seeding import GreedySeeder
+from .ga.repair import RepairEngine
+from .ga.seeding import GreedySeeder
 
 
 @dataclass
 class SolverConfig:
-    pop_size:        int   = 80
-    max_generations: int   = 300
-    cx_prob:         float = 0.85     # probabilità di crossover
-    mut_prob:        float = 0.20     # probabilità di mutazione
-    tournament_k:    int   = 3
-    elitism_n:       int   = 5        # individui elitisti preservati
-    stagnation_limit: int  = 50       # generazioni senza miglioramento → stop
-    start_time:      int   = 540      # 09:00
-    budget:          int   = 480      # 8 ore
-    start_lat:       float = 41.9028  # Roma: Colosseo area
-    start_lon:       float = 12.4964
-    w_score:         float = 0.50
-    w_dist:          float = 0.20
-    w_time:          float = 0.30
+    pop_size:         int   = 80
+    max_generations:  int   = 300
+    cx_prob:          float = 0.85
+    mut_prob:         float = 0.20
+    tournament_k:     int   = 3
+    stagnation_limit: int   = 50
+    start_time:       int   = 540      # 09:00
+    budget:           int   = 480      # 8 ore
+    start_lat:        float = 41.9028
+    start_lon:        float = 12.4964
+    w_score:          float = 0.50
+    w_dist:           float = 0.20
+    w_time:           float = 0.30
+    max_wait_min:     int   = 30       # attesa massima tollerata per singola sosta
 
 
 class NSGA2Solver:
     """
     Implementazione NSGA-II adattata al problema TOP-TW.
-    
-    Differenze rispetto all'NSGA-II classico:
-      - Cromosomi a lunghezza variabile (sottoinsiemi ordinati di PoI)
-      - Riparazione genetica post-operatori (repair before evaluation)
-      - Greedy seeding per popolazione iniziale di qualità
-      - Penalità dinamica sulle violazioni (si riduce con le generazioni)
+    Riceve un TouristProfile e lo propaga a tutti i componenti.
     """
 
-    def __init__(self, pois, dm: DistanceMatrix, config: SolverConfig):
-        self.pois   = pois
-        self.dm     = dm
-        self.config = config
+    def __init__(self, pois, dm: DistanceMatrix, config: SolverConfig, profile=None):
+        from .core.profile import TouristProfile, TransportMode, MobilityLevel
+        self.pois    = pois
+        self.dm      = dm
+        self.config  = config
+        self.profile = profile or TouristProfile()   # default: turista generico a piedi
+
+        # Inietta il profilo nella matrice distanze (per la velocità)
+        self.dm.profile = self.profile
 
         self.repair = RepairEngine(
             dm=dm,
+            profile=self.profile,
+            all_pois=pois,
             start_time=config.start_time,
             budget=config.budget,
             start_lat=config.start_lat,
             start_lon=config.start_lon,
+            max_wait_min=config.max_wait_min,
         )
         self.evaluator = FitnessEvaluator(
             dist_matrix=dm,
+            profile=self.profile,
             start_time=config.start_time,
             budget=config.budget,
             start_lat=config.start_lat,
@@ -74,6 +78,7 @@ class NSGA2Solver:
             pois=pois,
             dm=dm,
             repair=self.repair,
+            profile=self.profile,
             start_time=config.start_time,
             budget=config.budget,
             start_lat=config.start_lat,
@@ -114,8 +119,8 @@ class NSGA2Solver:
                 else:
                     c1, c2 = p1.clone(), p2.clone()
 
-                c1 = mutate(c1, self.pois, cfg.mut_prob)
-                c2 = mutate(c2, self.pois, cfg.mut_prob)
+                c1 = mutate(c1, self.seeder.allowed_pois, cfg.mut_prob)
+                c2 = mutate(c2, self.seeder.allowed_pois, cfg.mut_prob)
 
                 # Riparazione obbligatoria dopo ogni operatore
                 c1 = self.repair.repair(c1)
