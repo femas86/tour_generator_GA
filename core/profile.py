@@ -107,6 +107,13 @@ class TouristProfile:
     def __post_init__(self):
         # Normalizza le categorie in minuscolo
         self.allowed_categories = [c.lower() for c in self.allowed_categories]
+            # Coerci transport_mode da stringa a enum se necessario
+        if isinstance(self.transport_mode, str):
+            self.transport_mode = TransportMode(self.transport_mode.lower())
+
+        # Coerci mobility da stringa a enum se necessario
+        if isinstance(self.mobility, str):
+            self.mobility = MobilityLevel(self.mobility.lower())
 
     def allows_category(self, category_value: str) -> bool:
         """Restituisce True se la categoria è ammessa dal profilo."""

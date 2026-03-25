@@ -1,9 +1,6 @@
 {
-"transport_mode":"mixed",
-"mobility":{
-    "name":"NORMAL",
-    "value":"normal"
-},
+"transport_mode":"MIXED",
+"mobility":"NORMAL",
 "allowed_categories":[
 "monument",
 "park",
