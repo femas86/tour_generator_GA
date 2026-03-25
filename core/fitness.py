@@ -6,9 +6,13 @@ I tre obiettivi (score, distanza, tempo) vengono calcolati tenendo conto di:
   - want_lunch / want_dinner → penalità se manca il ristorante atteso
 """
 from __future__ import annotations
-from .models import Individual, FitnessScore, TourSchedule, ScheduledStop, PoICategory
-from .distance import DistanceMatrix
-from .profile import TouristProfile
+from core.models import Individual, FitnessScore, TourSchedule, ScheduledStop, PoICategory
+from core.distance import DistanceMatrix
+from core.profile import TouristProfile
+from config import (W_SCORE, W_DIST, W_TIME, PENALTY_BUDGET_OVERRUN, PENALTY_MEAL_MISSING,
+                    GROUP_VISIT_OVERHEAD_PER_PERSON, ROUTE_DETOUR_FACTOR, MAX_DIST_TRANSIT_KM,
+                    FITNESS_UTILIZATION_BONUS_FACTOR,
+                    WAIT_PENALTY_FACTOR, SCORE_BOOST_CAP, MAX_DIST_WALK_KM)
 
 
 class FitnessEvaluator:
@@ -21,11 +25,11 @@ class FitnessEvaluator:
         budget:       int,
         start_lat:    float,
         start_lon:    float,
-        w_score:      float = 0.50,
-        w_dist:       float = 0.20,
-        w_time:       float = 0.30,
-        penalty:      float = 50.0,
-        meal_penalty: float = 0.25,
+        w_score:      float = W_SCORE,
+        w_dist:       float = W_DIST,
+        w_time:       float = W_TIME,
+        penalty:      float = PENALTY_BUDGET_OVERRUN,
+        meal_penalty: float = PENALTY_MEAL_MISSING,
     ):
         self.dm           = dist_matrix
         self.profile      = profile
@@ -66,7 +70,7 @@ class FitnessEvaluator:
                 arrival = max(arrival, poi.time_window.open)
 
             # Visita più lunga in gruppo: +5 min per persona extra
-            duration  = poi.visit_duration + max(0, self.profile.group_size - 1) * 5
+            duration  = poi.visit_duration + max(0, self.profile.group_size - 1) * GROUP_VISIT_OVERHEAD_PER_PERSON
             departure = arrival + duration
             time_now  = departure
             prev_lat  = poi.lat
@@ -103,18 +107,23 @@ class FitnessEvaluator:
             p for p in self.dm.pois
             if self.profile.allows_category(p.category.value)
         ]
-        max_score = max(len(allowed_pois) * 1.5, 1.0)
-        max_dist  = 50.0 if self.profile.transport_mode.value in ("car", "transit") else 15.0
+        max_score = max(len(allowed_pois) * SCORE_BOOST_CAP, 1.0)
+        max_dist  = MAX_DIST_TRANSIT_KM if self.profile.transport_mode.value in ("car", "transit") else MAX_DIST_WALK_KM
 
         norm_score  = total_score / max_score
         norm_dist   = min(schedule.total_distance / max_dist, 1.0)
         time_over_h = (time_over / 60) * self.penalty
-        # Penalizza attese eccessive (oltre 5 min totali): scoraggia tour con buchi
-        total_wait  = getattr(schedule, 'total_wait', 0)
-        wait_penalty = max(0, (total_wait - 5) / 60) * 10.0
+        # Penalizza attese eccessive (oltre 5 min totali)
+        total_wait   = getattr(schedule, 'total_wait', 0)
+        wait_penalty = max(0, (total_wait - 5) / 60) * WAIT_PENALTY_FACTOR
+        # Bonus per utilizzo del budget: incentiva tour più ricchi.
+        # Senza questo termine, il GA converge a tour corti (meno distanza).
+        # Il bonus cresce linearmente con i minuti usati, cappato al budget.
+        utilization_bonus = min(schedule.total_time, self.budget) / self.budget * self.w_score * FITNESS_UTILIZATION_BONUS_FACTOR
 
         scalar = (
             self.w_score * norm_score
+            + utilization_bonus         # premia l'uso del budget disponibile
             - self.w_dist * norm_dist
             - time_over_h
             - wait_penalty
@@ -153,4 +162,4 @@ class FitnessEvaluator:
 
     def _km(self, lat: float, lon: float, poi) -> float:
         from .distance import haversine_km
-        return haversine_km(lat, lon, poi.lat, poi.lon) * 1.3
+        return haversine_km(lat, lon, poi.lat, poi.lon) * ROUTE_DETOUR_FACTOR

@@ -1,0 +1,28 @@
+{
+"transport_mode":"mixed",
+"mobility":{
+    "name":"NORMAL",
+    "value":"normal"
+},
+"allowed_categories":[
+"monument",
+"park",
+"viewpoint",
+"restaurant",
+"bar",
+"gelateria"
+],
+"want_lunch":true,
+"want_dinner":true,
+"lunch_time":720,
+"dinner_time":1230,
+"meal_window":90,
+"max_bar_stops":2,
+"max_gelateria_stops":1,
+"tag_weights":{
+"fotogenico":1.3,
+"vivace":1.2
+},
+"max_entry_fee":15,
+"group_size":4
+}

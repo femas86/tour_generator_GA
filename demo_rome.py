@@ -49,6 +49,7 @@ def profile_foodie_transit_updated() -> TouristProfile:
     """Gastronomico con mezzi: pranzo + cena, bar e gelateria nel pomeriggio."""
     return TouristProfile(
         transport_mode     = TransportMode.TRANSIT,
+        mobility           = MobilityLevel.NORMAL,
         allowed_categories = ["restaurant", "bar", "gelateria", "monument", "viewpoint", "park"],
         want_lunch         = True,
         want_dinner        = True,

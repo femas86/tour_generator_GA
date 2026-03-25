@@ -7,11 +7,13 @@ Garantisce:
   4. Slot pasto presente se richiesto dal profilo
 """
 from __future__ import annotations
-import random
+#import random
+from config import ROUTE_DETOUR_FACTOR
 from core.models import Individual, PoI, PoICategory
 from core.distance import DistanceMatrix, haversine_km
 from core.profile import TouristProfile
-
+from config import (MAX_WAIT_MIN, GROUP_VISIT_OVERHEAD_PER_PERSON, 
+                    MEAL_RESERVE_MIN, EVENING_THRESHOLD, )
 
 class RepairEngine:
 
@@ -24,7 +26,7 @@ class RepairEngine:
         budget:      int,
         start_lat:   float,
         start_lon:   float,
-        max_wait_min: int = 30,   # attesa massima tollerata per un singolo PoI (minuti)
+        max_wait_min: int = MAX_WAIT_MIN,   # attesa massima tollerata per un singolo PoI (minuti)
     ):
         self.dm           = dm
         self.profile      = profile
@@ -36,7 +38,7 @@ class RepairEngine:
         self.max_wait_min = max_wait_min
 
     def repair(self, individual: Individual) -> Individual:
-        """Pipeline: categoria → EDF → TW → budget → cap ristoranti → cap snack → pasto."""
+        """Pipeline: categoria → EDF → TW → budget → cap ristoranti → cap snack → pasto → TW finale."""
         individual.invalidate_cache()
         individual = self._filter_allowed_categories(individual)
         individual = self._sort_by_earliest_deadline(individual)
@@ -45,6 +47,9 @@ class RepairEngine:
         individual = self._cap_restaurants(individual)
         individual = self._cap_snacks(individual)
         individual = self._ensure_meal_slots(individual)
+        # Passaggio finale: rimuove PoI diventati infeasible dopo l'inserimento
+        # del ristorante (es. l'ultimo monumento che ora arriva fuori TW)
+        individual = self.repair_time_windows(individual)
         individual.invalidate_cache()
         return individual
 
@@ -80,7 +85,10 @@ class RepairEngine:
         Simula il tour e rimuove i PoI che causano problemi:
           - arrivo dopo la chiusura (infeasible)
           - attesa all'apertura superiore a max_wait_min (tour non realistico)
+        Usa group_overhead per coerenza con FitnessEvaluator.
         """
+        group_extra = max(0, self.profile.group_size - 1) * GROUP_VISIT_OVERHEAD_PER_PERSON
+
         valid    = []
         time_now = self.start_time
         prev_lat = self.start_lat
@@ -95,10 +103,10 @@ class RepairEngine:
 
             wait = max(0, poi.time_window.open - arrival)
             if wait > self.max_wait_min:
-                continue   # attesa inaccettabile: rimuovi
+                continue   # attesa inaccettabile
 
             arrival   = arrival + wait
-            departure = arrival + poi.visit_duration
+            departure = arrival + poi.visit_duration + group_extra
 
             valid.append(poi)
             time_now = departure
@@ -113,15 +121,43 @@ class RepairEngine:
     # ------------------------------------------------------------------
 
     def repair_budget(self, individual: Individual) -> Individual:
+        """
+        Rimuove PoI finché il budget è rispettato, riservando tempo
+        solo per gli slot pasto SERALI (cena) non ancora coperti.
+        Il pranzo (≈12:00) cade naturalmente nel flusso diurno e non
+        richiede una riserva esplicita nel budget.
+        """
         while True:
-            total = self._simulate_total_time(individual.genes)
-            if total <= self.budget or not individual.genes:
+            sched = self._simulate_schedule(individual.genes)
+            if not individual.genes:
                 break
-            worst = min(
-                individual.genes,
-                key=lambda p: p.score / (p.visit_duration + 1e-9)
+
+            # Conta solo slot SERALI non ancora coperti da un ristorante
+            meal_slots = self.profile.needs_meal_slot()
+            uncovered_evening = sum(
+                1 for (slot_open, slot_close) in meal_slots
+                if slot_open >= EVENING_THRESHOLD
+                and not any(
+                    s["poi"].category == PoICategory.RESTAURANT
+                    and slot_open <= s["arrival"] <= slot_close
+                    for s in sched
+                )
             )
+
+            effective_budget = self.budget - uncovered_evening * MEAL_RESERVE_MIN
+            total = sched[-1]["departure"] - self.start_time if sched else 0
+
+            if total <= effective_budget:
+                break
+
+            removable = [
+                p for p in individual.genes
+                if p.category != PoICategory.RESTAURANT
+            ] or individual.genes
+
+            worst = min(removable, key=lambda p: p.score / (p.visit_duration + 1e-9))
             individual.genes.remove(worst)
+
         return individual
 
     # ------------------------------------------------------------------
@@ -130,35 +166,48 @@ class RepairEngine:
 
     def _cap_restaurants(self, individual: Individual) -> Individual:
         """
-        Rimuove i ristoranti in eccesso rispetto agli slot pasto del profilo.
+        Limita i ristoranti nel tour: al massimo 1 per slot pasto,
+        con TW compatibile con lo slot specifico.
 
-        Logica:
-          - Conta quanti slot pasto il profilo richiede (0, 1, 2)
-          - Se ci sono più ristoranti nel tour di quanti ne servono,
-            mantieni solo i migliori N per score (uno per slot),
-            rispettando l'orario di apertura del slot corrispondente.
-          - BAR e GELATERIA non vengono contati come ristoranti e
-            non subiscono questo cappuccio.
+        - Per ogni slot (pranzo, cena) tiene il ristorante con score più
+          alto la cui TW si sovrappone a quello slot.
+        - Rimuove tutti gli altri ristoranti (inclusi quelli di un slot
+          sbagliato — es. due ristoranti lunch quando serve un lunch e una cena).
+        - Se nessun pasto è richiesto, rimuove tutti i ristoranti.
+        - BAR e GELATERIA non sono toccati da questo metodo.
         """
-        n_slots = len(self.profile.needs_meal_slot())
-
         restaurants_in_tour = [
             p for p in individual.genes
             if p.category == PoICategory.RESTAURANT
         ]
+        if not restaurants_in_tour:
+            return individual
 
-        if len(restaurants_in_tour) <= n_slots:
-            return individual  # già OK
+        meal_slots = self.profile.needs_meal_slot()
 
-        # Tieni solo i migliori N ristoranti per score
-        restaurants_in_tour.sort(key=lambda p: p.score, reverse=True)
-        keep    = set(p.id for p in restaurants_in_tour[:n_slots])
-        remove  = set(p.id for p in restaurants_in_tour[n_slots:])
+        if not meal_slots:
+            individual.genes = [
+                p for p in individual.genes
+                if p.category != PoICategory.RESTAURANT
+            ]
+            return individual
 
-        individual.genes = [
-            p for p in individual.genes
-            if p.id not in remove
-        ]
+        to_keep: set[str] = set()
+        for (slot_open, slot_close) in meal_slots:
+            # Candidati: ristorante la cui TW si sovrappone allo slot temporale
+            # e non è già assegnato a un altro slot
+            candidates = [
+                r for r in restaurants_in_tour
+                if r.time_window.open <= slot_close
+                and r.time_window.close >= slot_open
+                and r.id not in to_keep
+            ]
+            if candidates:
+                best = max(candidates, key=lambda r: r.score)
+                to_keep.add(best.id)
+
+        remove = {r.id for r in restaurants_in_tour if r.id not in to_keep}
+        individual.genes = [p for p in individual.genes if p.id not in remove]
         return individual
 
     def _cap_snacks(self, individual: Individual) -> Individual:
@@ -216,6 +265,12 @@ class RepairEngine:
                 continue
 
             inserted = False
+            original_poi_ids = {s["poi"].id for s in schedule}
+
+            # Tolleranza di attesa: slot serali (≥18:00) ammettono più attesa
+            # (rientro in hotel, aperitivo, passeggiata pre-cena = comportamento normale)
+            
+            slot_wait_tol = 90 if slot_open >= EVENING_THRESHOLD else self.max_wait_min + 15
 
             # --- Tentativo 1: inserimento diretto ---
             for rest in sorted(restaurants, key=lambda r: r.score, reverse=True):
@@ -223,15 +278,22 @@ class RepairEngine:
                     continue
                 for pos in range(len(individual.genes) + 1):
                     test_genes = individual.genes[:pos] + [rest] + individual.genes[pos:]
-                    test_sched = self._simulate_schedule(test_genes, max_wait_override=45)
+                    test_sched = self._simulate_schedule(test_genes)
                     if not test_sched:
                         continue
                     rest_stop = next((s for s in test_sched if s["poi"].id == rest.id), None)
                     if rest_stop is None:
                         continue
-                    arrival = rest_stop["arrival"]
-                    total_t = test_sched[-1]["departure"] - self.start_time
-                    if slot_open <= arrival <= slot_close and total_t <= self.budget:
+
+                    arrival   = rest_stop["arrival"]
+                    wait_rest = rest_stop["wait"]
+                    total_t   = test_sched[-1]["departure"] - self.start_time
+                    new_poi_ids = {s["poi"].id for s in test_sched}
+
+                    if (slot_open <= arrival <= slot_close
+                            and wait_rest <= slot_wait_tol
+                            and total_t <= self.budget
+                            and original_poi_ids.issubset(new_poi_ids)):
                         individual.genes.insert(pos, rest)
                         inserted = True
                         break
@@ -256,15 +318,18 @@ class RepairEngine:
                     if rest in individual.genes:
                         continue
                     test_genes = [r if r.id != victim.id else rest for r in individual.genes]
-                    test_sched = self._simulate_schedule(test_genes, max_wait_override=45)
+                    test_sched = self._simulate_schedule(test_genes)
                     if not test_sched:
                         continue
                     rest_stop = next((s for s in test_sched if s["poi"].id == rest.id), None)
                     if rest_stop is None:
                         continue
-                    arrival = rest_stop["arrival"]
-                    total_t = test_sched[-1]["departure"] - self.start_time
-                    if slot_open <= arrival <= slot_close and total_t <= self.budget:
+                    arrival   = rest_stop["arrival"]
+                    wait_rest = rest_stop["wait"]
+                    total_t   = test_sched[-1]["departure"] - self.start_time
+                    if (slot_open <= arrival <= slot_close
+                            and wait_rest <= slot_wait_tol
+                            and total_t <= self.budget):
                         idx = individual.genes.index(victim)
                         individual.genes[idx] = rest
                         inserted = True
@@ -279,12 +344,18 @@ class RepairEngine:
     # Helper interni
     # ------------------------------------------------------------------
 
-    def _simulate_schedule(self, genes: list[PoI], max_wait_override: int | None = None) -> list[dict]:
+    def _simulate_schedule(self, genes: list[PoI]) -> list[dict]:
         """
-        Simula lo schedule. Salta i PoI con TW violata o attesa eccessiva.
-        max_wait_override: se specificato, usa questa soglia invece di self.max_wait_min.
+        Simula lo schedule esattamente come FitnessEvaluator.decode():
+          - salta solo PoI con arrivo > time_window.close (impossibili)
+          - include TUTTE le attese senza soglia
+          - applica group_overhead per coerenza con FitnessEvaluator
+
+        Il filtraggio per max_wait_min avviene solo in repair_time_windows,
+        prima di questa simulazione.
         """
-        max_wait = max_wait_override if max_wait_override is not None else self.max_wait_min
+        group_extra = max(0, self.profile.group_size - 1) * 5  # minuti extra per persona
+
         stops    = []
         time_now = self.start_time
         prev_lat = self.start_lat
@@ -294,12 +365,11 @@ class RepairEngine:
             travel  = self._travel_min(prev_lat, prev_lon, poi)
             arrival = time_now + travel
             if arrival > poi.time_window.close:
-                continue
-            wait = max(0, poi.time_window.open - arrival)
-            if wait > max_wait:
-                continue
+                continue  # impossibile: la TW è chiusa
+            wait      = max(0, poi.time_window.open - arrival)
             arrival   = arrival + wait
-            departure = arrival + poi.visit_duration
+            duration  = poi.visit_duration + group_extra
+            departure = arrival + duration
             stops.append({"poi": poi, "arrival": arrival, "departure": departure, "wait": wait})
             time_now = departure
             prev_lat = poi.lat
@@ -308,11 +378,12 @@ class RepairEngine:
         return stops
 
     def _simulate_total_time(self, genes: list[PoI]) -> int:
+        """Tempo totale del tour (minuti). Usato da repair_budget."""
         sched = self._simulate_schedule(genes)
         if not sched:
-            return self.budget + 1   # infeasible → forza rimozione
+            return self.budget + 1   # tour vuoto → forza rimozione
         return sched[-1]["departure"] - self.start_time
 
     def _travel_min(self, lat: float, lon: float, to: PoI) -> int:
-        km = haversine_km(lat, lon, to.lat, to.lon) * 1.3
+        km = haversine_km(lat, lon, to.lat, to.lon) * ROUTE_DETOUR_FACTOR
         return self.profile.travel_time_min(km)

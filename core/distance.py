@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 from typing import Union, Optional, TYPE_CHECKING
 from .models import PoI
+from config import ROUTE_DETOUR_FACTOR
 
 if TYPE_CHECKING:
     from .profile import TouristProfile
@@ -41,7 +42,7 @@ class DistanceMatrix:
             for j, b in enumerate(self.pois):
                 if i == j:
                     continue
-                km = haversine_km(a.lat, a.lon, b.lat, b.lon) * 1.3
+                km = haversine_km(a.lat, a.lon, b.lat, b.lon) * ROUTE_DETOUR_FACTOR
                 self._dist[i][j] = km
 
     def dist(self, a: Union[PoI, str], b: Union[PoI, str]) -> float:
@@ -57,7 +58,7 @@ class DistanceMatrix:
 
     def time_from_coord(self, lat: float, lon: float, poi: PoI) -> int:
         """Tempo in minuti da coordinate arbitrarie (es. hotel) a un PoI."""
-        km = haversine_km(lat, lon, poi.lat, poi.lon) * 1.3
+        km = haversine_km(lat, lon, poi.lat, poi.lon) * ROUTE_DETOUR_FACTOR
         return self._km_to_min(km)
 
     def _km_to_min(self, km: float) -> int:

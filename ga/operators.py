@@ -169,14 +169,15 @@ def reverse_segment_mutation(individual: Individual, _pool: list[PoI]) -> Indivi
 
 def add_remove_mutation(individual: Individual, pool: list[PoI]) -> Individual:
     """
-    Con prob 0.5: aggiunge un PoI casuale non ancora nel tour.
-    Con prob 0.5: rimuove il PoI con il peggior score/durata.
-    Il wildcard gene segue la stessa logica di sostituzione.
+    Con prob 0.70: aggiunge un PoI casuale non ancora nel tour (esplora).
+    Con prob 0.30: rimuove il PoI con il peggior score/durata (semplifica).
+    Il bias verso l'aggiunta contrasta la tendenza del GA a produrre
+    tour sempre più corti dopo molte generazioni di mutazione.
     """
     g        = individual.genes
     visited  = {p.id for p in g}
 
-    if random.random() < 0.5:
+    if random.random() < 0.70:   # era 0.50: bias verso aggiunta
         candidates = [p for p in pool if p.id not in visited]
         if candidates:
             new_poi = random.choice(candidates)

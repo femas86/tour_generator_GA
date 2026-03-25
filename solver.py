@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from core.models import Individual, FitnessScore
+from core.models import Individual
 from core.distance import DistanceMatrix
 from core.fitness import FitnessEvaluator
 from ga.operators import (
@@ -17,24 +17,26 @@ from ga.operators import (
 )
 from ga.repair import RepairEngine
 from ga.seeding import GreedySeeder
+import config
 
 
 @dataclass
 class SolverConfig:
-    pop_size:         int   = 80
-    max_generations:  int   = 300
-    cx_prob:          float = 0.85
-    mut_prob:         float = 0.20
-    tournament_k:     int   = 3
-    stagnation_limit: int   = 50
-    start_time:       int   = 540      # 09:00
-    budget:           int   = 480      # 8 ore
-    start_lat:        float = 41.9028
-    start_lon:        float = 12.4964
-    w_score:          float = 0.50
-    w_dist:           float = 0.20
-    w_time:           float = 0.30
-    max_wait_min:     int   = 30       # attesa massima tollerata per singola sosta
+    pop_size:         int   = config.GA_POP_SIZE
+    max_generations:  int   = config.GA_MAX_GENERATIONS
+    cx_prob:          float = config.GA_CX_PROB
+    mut_prob:         float = config.GA_MUT_PROB
+    tournament_k:     int   = config.GA_TOURNAMENT_K
+    stagnation_limit: int   = config.GA_STAGNATION_LIMIT
+    start_time:       int   = config.DEFAULT_START_TIME
+    budget:           int   = config.DEFAULT_BUDGET
+    start_lat:        float = config.DEFAULT_START_LAT
+    start_lon:        float = config.DEFAULT_START_LON
+    w_score:          float = config.W_SCORE
+    w_dist:           float = config.W_DIST
+    w_time:           float = config.W_TIME
+    max_wait_min:     int   = config.GA_MAX_WAIT_MIN
+    ox_crossover_prob: float = config.GA_OX_CROSSOVER_PROB
 
 
 class NSGA2Solver:
@@ -44,7 +46,7 @@ class NSGA2Solver:
     """
 
     def __init__(self, pois, dm: DistanceMatrix, config: SolverConfig, profile=None):
-        from core.profile import TouristProfile, TransportMode, MobilityLevel
+        from core.profile import TouristProfile # import locale per evitare dipendenze circolari
         self.pois    = pois
         self.dm      = dm
         self.config  = config
@@ -112,7 +114,7 @@ class NSGA2Solver:
 
                 # Alterna tra OX e PoI-aware crossover
                 if random.random() < cfg.cx_prob:
-                    if random.random() < 0.6:
+                    if random.random() < cfg.ox_crossover_prob:
                         c1, c2 = order_crossover(p1, p2)
                     else:
                         c1, c2 = poi_aware_crossover(p1, p2)
